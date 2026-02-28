@@ -119,6 +119,10 @@ Workflow: `.github/workflows/deploy.yml`
 - Deploy SQL in dependency order
 - Run SQL validation tests
 
+## Validation
+
+- CI/CD promotion flow validated on branches: dev -> test -> main.
+
 ## Branching
 
 - `dev`: active development
