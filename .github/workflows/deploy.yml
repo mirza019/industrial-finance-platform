@@ -1,0 +1,74 @@
+name: deploy
+
+on:
+  push:
+    branches: ["main", "dev", "test"]
+    paths:
+      - "sql/**"
+      - "tests/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: snowflake-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-snowflake:
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'main' && 'prod' || github.ref_name == 'test' && 'test' || 'dev' }}
+    env:
+      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+      SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+      SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+      SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Snowflake CLI
+        run: pip install snowflake-cli-labs
+
+      - name: Configure Snowflake profile
+        run: |
+          mkdir -p ~/.snowflake
+          cat > ~/.snowflake/config.toml <<EOF
+          default_connection_name = "ci"
+
+          [connections.ci]
+          account = "${SNOWFLAKE_ACCOUNT}"
+          user = "${SNOWFLAKE_USER}"
+          password = "${SNOWFLAKE_PASSWORD}"
+          role = "${SNOWFLAKE_ROLE}"
+          warehouse = "${SNOWFLAKE_WAREHOUSE}"
+          database = "${SNOWFLAKE_DATABASE}"
+          EOF
+          chmod 600 ~/.snowflake/config.toml
+
+      - name: Deploy SQL in order
+        run: |
+          snow sql -c ci -f sql/01_database/01_create_db_schema.sql
+          snow sql -c ci -f sql/02_stage/01_create_file_format_and_stage.sql
+          snow sql -c ci -f sql/03_landing/01_create_landing_and_copy_core_files.sql
+          snow sql -c ci -f sql/04_bronze/00_create_tables.sql
+          snow sql -c ci -f sql/05_silver/00_create_tables.sql
+          snow sql -c ci -f sql/06_gold/00_create_gold_tables.sql
+          snow sql -c ci -f sql/07_control/00_create_control_framework.sql
+          snow sql -c ci -f sql/08_audit/00_create_audit_framework.sql
+          snow sql -c ci -f sql/08_audit/01_create_email_alerting.sql
+          snow sql -c ci -f sql/09_streams/00_create_streams.sql
+          snow sql -c ci -f sql/05_silver/11_proc_apply_silver_incremental.sql
+          snow sql -c ci -f sql/06_gold/11_proc_apply_gold_incremental.sql
+          snow sql -c ci -f sql/10_tasks/00_create_tasks_orchestration.sql
+
+      - name: Run SQL tests
+        run: |
+          snow sql -c ci -f tests/test_row_counts.sql
+          snow sql -c ci -f tests/test_duplicates.sql
+          snow sql -c ci -f tests/test_incremental_recon.sql
